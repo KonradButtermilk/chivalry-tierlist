@@ -12,15 +12,43 @@ document.addEventListener('DOMContentLoaded', () => {
     const adminPasswordInput = document.getElementById('admin-password');
     const submitLoginBtn = document.getElementById('submit-login');
     const cancelLoginBtn = document.getElementById('cancel-login');
+    const sortBtn = document.getElementById('sort-btn');
+
+    // Context Menu & Edit Modal
+    const contextMenu = document.getElementById('context-menu');
+    const ctxEdit = document.getElementById('ctx-edit');
+    const ctxDelete = document.getElementById('ctx-delete');
+    const editModal = document.getElementById('edit-modal');
+    const editNameInput = document.getElementById('edit-name');
+    const editDescInput = document.getElementById('edit-desc');
+    const saveEditBtn = document.getElementById('save-edit');
+    const cancelEditBtn = document.getElementById('cancel-edit');
 
     // State
     let tierData = { 1: [], 2: [], 3: [], 4: [], 5: [] };
     let isAdmin = false;
     let adminPassword = '';
+    let sortMode = 'default'; // 'default' (by tier/id), 'alpha' (A-Z)
+    let selectedPlayerId = null; // For context menu actions
 
     // --- Initialization ---
     checkAuth();
     fetchData();
+
+    // --- Global Event Listeners ---
+    document.addEventListener('click', (e) => {
+        if (!contextMenu.contains(e.target)) {
+            contextMenu.classList.add('hidden');
+        }
+    });
+
+    document.addEventListener('contextmenu', (e) => {
+        if (!isAdmin) return;
+        // Prevent default if clicking on a player card
+        if (e.target.closest('.player-card')) {
+            e.preventDefault();
+        }
+    });
 
     // --- Auth Logic ---
     function checkAuth() {
@@ -37,11 +65,14 @@ document.addEventListener('DOMContentLoaded', () => {
             loginBtn.classList.add('hidden');
             logoutBtn.classList.remove('hidden');
             adminControls.classList.remove('hidden');
+            trashZone.classList.remove('hidden'); // Show trash zone for admins
         } else {
             loginBtn.classList.remove('hidden');
             logoutBtn.classList.add('hidden');
             adminControls.classList.add('hidden');
+            trashZone.classList.add('hidden');
         }
+        renderAllTiers(); // Re-render to update drag handles
     }
 
     loginBtn.addEventListener('click', () => {
@@ -82,20 +113,9 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- API Logic ---
     async function fetchData() {
         try {
-            console.log('Fetching data from:', API_URL);
             const response = await fetch(API_URL);
-
-            if (!response.ok) {
-                const errText = await response.text();
-                throw new Error(`Server Error: ${response.status} ${errText}`);
-            }
-
+            if (!response.ok) throw new Error('Server Error');
             const players = await response.json();
-            console.log('Players received:', players);
-
-            if (players.length === 0) {
-                console.warn('Database is empty!');
-            }
 
             // Reset data
             tierData = { 1: [], 2: [], 3: [], 4: [], 5: [] };
@@ -110,7 +130,6 @@ document.addEventListener('DOMContentLoaded', () => {
             renderAllTiers();
         } catch (error) {
             console.error('Error loading data:', error);
-            alert(`Błąd pobierania danych: ${error.message}\nSprawdź konsolę (F12) po więcej szczegółów.`);
         }
     }
 
@@ -133,11 +152,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 return null;
             }
 
+            if (response.status === 409) {
+                alert('Błąd: Gracz o tej nazwie już istnieje!');
+                return null;
+            }
+
             if (!response.ok) throw new Error('API Error');
             return await response.json();
         } catch (error) {
             console.error('API Action Failed:', error);
-            alert('Action failed. Check console.');
+            alert('Wystąpił błąd. Sprawdź konsolę.');
             return null;
         }
     }
@@ -161,6 +185,29 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // --- Sorting ---
+    sortBtn.addEventListener('click', () => {
+        if (sortMode === 'default') {
+            sortMode = 'alpha';
+            sortBtn.textContent = '🔤 Sortuj: A-Z';
+        } else {
+            sortMode = 'default';
+            sortBtn.textContent = '🔤 Sortuj: Domyślne';
+        }
+        renderAllTiers();
+    });
+
+    function getSortedPlayers(tierNum) {
+        const players = [...(tierData[tierNum] || [])];
+        if (sortMode === 'alpha') {
+            players.sort((a, b) => a.name.localeCompare(b.name));
+        } else {
+            // Default sort (usually by ID or creation time if preserved, here just array order)
+            // If we wanted strictly by ID: players.sort((a, b) => a.id - b.id);
+        }
+        return players;
+    }
+
     function renderAllTiers() {
         for (let i = 1; i <= 5; i++) {
             renderTier(i);
@@ -171,7 +218,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const listEl = document.getElementById(`tier-${tierNum}-list`);
         listEl.innerHTML = '';
 
-        const players = tierData[tierNum] || [];
+        const players = getSortedPlayers(tierNum);
         players.forEach((player, index) => {
             const card = createPlayerCard(player, index);
             listEl.appendChild(card);
@@ -184,19 +231,104 @@ document.addEventListener('DOMContentLoaded', () => {
         div.textContent = player.name;
         div.dataset.id = player.id;
         div.dataset.tier = player.tier;
-        div.dataset.index = index;
+
+        // Tooltip
+        if (player.description) {
+            div.title = player.description;
+        }
 
         if (isAdmin) {
             div.draggable = true;
             div.style.cursor = 'grab';
             div.addEventListener('dragstart', handleDragStart);
             div.addEventListener('dragend', handleDragEnd);
+
+            // Context Menu Trigger
+            div.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+                showContextMenu(e, player);
+            });
         } else {
             div.draggable = false;
             div.style.cursor = 'default';
         }
 
         return div;
+    }
+
+    // --- Context Menu Logic ---
+    function showContextMenu(e, player) {
+        selectedPlayerId = player.id;
+        contextMenu.style.top = `${e.clientY}px`;
+        contextMenu.style.left = `${e.clientX}px`;
+        contextMenu.classList.remove('hidden');
+    }
+
+    ctxDelete.addEventListener('click', () => {
+        if (selectedPlayerId) {
+            deletePlayer(selectedPlayerId);
+            contextMenu.classList.add('hidden');
+        }
+    });
+
+    ctxEdit.addEventListener('click', () => {
+        if (selectedPlayerId) {
+            openEditModal(selectedPlayerId);
+            contextMenu.classList.add('hidden');
+        }
+    });
+
+    // --- Edit Modal Logic ---
+    function openEditModal(id) {
+        const player = findPlayerById(id);
+        if (!player) return;
+
+        editNameInput.value = player.name;
+        editDescInput.value = player.description || '';
+        editModal.classList.remove('hidden');
+        editNameInput.focus();
+    }
+
+    cancelEditBtn.addEventListener('click', () => {
+        editModal.classList.add('hidden');
+        selectedPlayerId = null;
+    });
+
+    saveEditBtn.addEventListener('click', async () => {
+        if (!selectedPlayerId) return;
+
+        const newName = editNameInput.value.trim();
+        const newDesc = editDescInput.value.trim();
+
+        if (!newName) {
+            alert('Nazwa nie może być pusta!');
+            return;
+        }
+
+        const player = findPlayerById(selectedPlayerId);
+        const result = await apiCall('PUT', {
+            id: selectedPlayerId,
+            name: newName,
+            description: newDesc,
+            tier: player.tier // Keep existing tier
+        });
+
+        if (result) {
+            // Update local data
+            player.name = newName;
+            player.description = newDesc;
+            renderAllTiers();
+            editModal.classList.add('hidden');
+            selectedPlayerId = null;
+        }
+    });
+
+    function findPlayerById(id) {
+        for (let t = 1; t <= 5; t++) {
+            const p = tierData[t].find(p => p.id == id);
+            if (p) return p;
+        }
+        return null;
     }
 
     // --- Drag and Drop ---
@@ -264,13 +396,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const result = await apiCall('PUT', { id, tier: newTier });
             if (!result) {
-                fetchData();
+                fetchData(); // Revert on error
             }
         }
     }
 
     async function deletePlayer(id) {
-        if (confirm('Delete player?')) {
+        if (confirm('Czy na pewno chcesz usunąć tego gracza?')) {
             findAndRemoveLocal(id);
             renderAllTiers();
             await apiCall('DELETE', { id });
@@ -286,4 +418,5 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         return null;
     }
+});
 });
